@@ -1,0 +1,154 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: A sample application showing how to use Amazon DynamoDB Accelerator (DAX) with AWS Lambda and AWS CloudFormation.
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  siteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: geturl.zip
+      Description: Resolve/Store URLs
+      Environment:
+        Variables:
+          DAX_ENDPOINT: !GetAtt getUrlCluster.ClusterDiscoveryEndpoint
+          DDB_TABLE: !Ref getUrlTable
+      Events:
+        getUrl:
+          Type: HttpApi
+          Properties:
+            Method: get
+            Path: /{id+}
+        postUrl:
+          Type: HttpApi
+          Properties:
+            Method: post
+            Path: /
+      Handler: lambda/index.handler
+      Runtime: nodejs16.x
+      Timeout: 10
+      Role: !GetAtt getUrlRole.Arn
+      VpcConfig:
+        SecurityGroupIds: 
+            - !GetAtt getUrlSecurityGroup.GroupId
+        SubnetIds:
+            - !Ref getUrlSubnet
+
+  # dynamo table
+  getUrlTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: GetUrl-sample
+      AttributeDefinitions:
+        - 
+          AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - 
+          AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+# DAX cluster.
+# role and policy that grants the DAX cluster permission to access your DynamoDB data, but also be useable by Lambda Function. 
+# (No edite ni elimine este rol después de crearlo, o el clúster no podrá acceder a DynamoDB.)
+
+  getUrlCluster:
+    Type: AWS::DAX::Cluster
+    Properties:
+      ClusterName: getUrl-sample
+      Description: Cluster for GetUrl Sample
+      IAMRoleARN: !GetAtt getUrlRole.Arn
+      NodeType: dax.t2.small
+      ReplicationFactor: 1
+      SecurityGroupIds:
+        - !GetAtt getUrlSecurityGroup.GroupId
+      SubnetGroupName: !Ref getUrlSubnetGroup
+
+  getUrlRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      RoleName: getUrl-sample-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - dax.amazonaws.com
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole        
+      Policies:
+        - PolicyName: DAXAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+             - Effect: Allow
+               Action:
+                - 'dax:PutItem'
+                - 'dax:GetItem'
+                - 'dynamodb:DescribeTable'
+                - 'dynamodb:GetItem'
+                - 'dynamodb:PutItem'
+               Resource: '*' 
+
+# security group with a rule to allow Lambda to send traffic to DAX on TCP port 8111
+
+  getUrlSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for GetUrl
+      GroupName: getUrl-sample
+      VpcId: !Ref getUrlVpc
+  
+  getUrlSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: getUrlSecurityGroup
+    Properties:
+      GroupId: !GetAtt getUrlSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 8111
+      ToPort: 8111
+      SourceSecurityGroupId: !GetAtt getUrlSecurityGroup.GroupId         
+
+# creates the networking configuration for the example, including the VPC, subnet, and a subnet group.
+# Esta parte de la plantilla crea una nueva VPC y le agrega una subred en la primera zona de disponibilidad 
+# disponible de la región de AWS actual y luego crea un grupo de subred DAX para esa subred. 
+# DAX usa las subredes en un grupo de subredes para determinar cómo distribuir los nodos del clúster. Para uso en producción, 
+# se recomienda encarecidamente que utilice varios nodos en varias zonas de disponibilidad para la redundancia. 
+# Cada zona de disponibilidad requiere que se cree y agregue su propia subred al grupo de subredes.
+
+  getUrlVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: getUrl-sample
+  
+  getUrlSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ''
+      CidrBlock: 10.0.0.0/20
+      Tags:
+        - Key: Name
+          Value: getUrl-sample
+      VpcId: !Ref getUrlVpc
+  
+  getUrlSubnetGroup:
+    Type: AWS::DAX::SubnetGroup
+    Properties:
+      Description: Subnet group for GetUrl Sample
+      SubnetGroupName: getUrl-sample
+      SubnetIds: 
+        - !Ref getUrlSubnet      
+

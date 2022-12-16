@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: A sample application showing how to use Amazon DynamoDB Accelerator (DAX)
+  with AWS Lambda and AWS CloudFormation.
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  siteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: s3://bucket-url/6f35ed4bc409ee2d0403e1c0c6bdc725
+      Description: Resolve/Store URLs
+      Environment:
+        Variables:
+          DAX_ENDPOINT:
+            Fn::GetAtt:
+            - getUrlCluster
+            - ClusterDiscoveryEndpoint
+          DDB_TABLE:
+            Ref: getUrlTable
+      Events:
+        getUrl:
+          Type: HttpApi
+          Properties:
+            Method: get
+            Path: /{id+}
+        postUrl:
+          Type: HttpApi
+          Properties:
+            Method: post
+            Path: /
+      Handler: lambda/index.handler
+      Runtime: nodejs16.x
+      Timeout: 10
+      Role:
+        Fn::GetAtt:
+        - getUrlRole
+        - Arn
+      VpcConfig:
+        SecurityGroupIds:
+        - Fn::GetAtt:
+          - getUrlSecurityGroup
+          - GroupId
+        SubnetIds:
+        - Ref: getUrlSubnet
+  getUrlTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: GetUrl-sample
+      AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+  getUrlCluster:
+    Type: AWS::DAX::Cluster
+    Properties:
+      ClusterName: getUrl-sample
+      Description: Cluster for GetUrl Sample
+      IAMRoleARN:
+        Fn::GetAtt:
+        - getUrlRole
+        - Arn
+      NodeType: dax.t2.small
+      ReplicationFactor: 1
+      SecurityGroupIds:
+      - Fn::GetAtt:
+        - getUrlSecurityGroup
+        - GroupId
+      SubnetGroupName:
+        Ref: getUrlSubnetGroup
+  getUrlRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: getUrl-sample-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - dax.amazonaws.com
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+      - PolicyName: DAXAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - dax:PutItem
+            - dax:GetItem
+            - dynamodb:DescribeTable
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            Resource: '*'
+  getUrlSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for GetUrl
+      GroupName: getUrl-sample
+      VpcId:
+        Ref: getUrlVpc
+  getUrlSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: getUrlSecurityGroup
+    Properties:
+      GroupId:
+        Fn::GetAtt:
+        - getUrlSecurityGroup
+        - GroupId
+      IpProtocol: tcp
+      FromPort: 8111
+      ToPort: 8111
+      SourceSecurityGroupId:
+        Fn::GetAtt:
+        - getUrlSecurityGroup
+        - GroupId
+  getUrlVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+      - Key: Name
+        Value: getUrl-sample
+  getUrlSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+        - 0
+        - Fn::GetAZs: ''
+      CidrBlock: 10.0.0.0/20
+      Tags:
+      - Key: Name
+        Value: getUrl-sample
+      VpcId:
+        Ref: getUrlVpc
+  getUrlSubnetGroup:
+    Type: AWS::DAX::SubnetGroup
+    Properties:
+      Description: Subnet group for GetUrl Sample
+      SubnetGroupName: getUrl-sample
+      SubnetIds:
+      - Ref: getUrlSubnet
